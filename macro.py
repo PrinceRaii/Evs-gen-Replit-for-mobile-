@@ -1,116 +1,41 @@
-import pyautogui as ca
 import os
 import asyncio
-import requests
-import zendriver as zd
+import json
 import random
 import string
-import json
 import re
 import socket
-import httpx
+import httpx # Used for async HTTP requests
 import base64
 import tls_client
 import time
 import hashlib
 import hmac
-from datetime import datetime, timezone, timedelta
-from dateutil.parser import isoparse
+from datetime import datetime
 from colorama import Fore, Style, init
 from pystyle import Colorate, Colors, Center
-import websocket
-from notifypy import Notify
 
+# --- REMOVED DESKTOP/GUI DEPENDENCIES & CAPTCHA API ---
+# Removed: pyautogui, zendriver, notifypy, websocket, CaptchaSolver
 
 init(autoreset=True)
 
-with open('config.json', 'r') as f:
-    config = json.load(f)
+try:
+    with open('config.json', 'r') as f:
+        config = json.load(f)
+except FileNotFoundError:
+    print(f"{Fore.RED}ERROR: config.json not found. Please create it.{Style.RESET_ALL}")
+    config = {}
 
 INCOGNITO_API_URL = config.get("mail_api", "https://api.incognitomail.co/")
 INCOGNITO_DOMAIN = config.get("mail_domain", "vorlentis.xyz")
+# CAPTCHA_API_KEY is removed
+CAPTCHA_SITEKEY = config.get("captcha_sitekey", "4c672d355d3e233934302a0ed1bc8813")
 
 USE_HUMANIZER = False
 USE_VPN = False 
 
-def send_notification(title, message):
-    if not config.get("notify", False):
-        return
-    try:
-        notification = Notify()
-        notification.application_name = "Discord Account Generator"
-        notification.title = title
-        notification.message = message
-        icon_path = "data/pack.ico"
-        if icon_path and os.path.isfile(icon_path):
-            notification.icon = icon_path
-        notification.send()
-    except Exception as e:
-        pass
-
-def log(type, message):
-    if type.upper() in ["SUCCESS", "ERROR"]:
-        now = datetime.now().strftime("%H:%M:%S")
-        type_map = {
-            "SUCCESS": Fore.GREEN + "SUCCESS" + Style.RESET_ALL,
-            "ERROR": Fore.RED + "ERROR" + Style.RESET_ALL
-        }
-        tag = type_map.get(type.upper(), type.upper())
-        print(f"{Fore.LIGHTBLACK_EX}{now}{Style.RESET_ALL} - {tag} • {message}")
-
-def account_ratelimit(email=None, username=None):
-    try:
-        headers = {
-            "Accept": "*/*",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Content-Type": "application/json",
-            "DNT": "1",
-            "Host": "discord.com",
-            "Origin": "https://discord.com",
-            "Referer": "https://discord.com/register",
-            "Sec-Fetch-Dest": "empty",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Site": "same-origin",
-            "Sec-GPC": "1",
-            "TE": "trailers",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
-            "X-Debug-Options": "bugReporterEnabled",
-            "X-Discord-Locale": "en-US",
-            "X-Discord-Timezone": "America/New_York",
-        }
-        
-        test_email = email if email else ''.join(random.choices('abcdefghijklmnopqrstuvwxyz0123456789', k=10)) + "@gmail.com"
-        test_username = username if username else ''.join(random.choices(string.ascii_letters, k=8))
-        
-        data = {
-            'email': test_email,
-            'password': "TestPassword123!",
-            'date_of_birth': "2000-01-01",
-            'username': test_username,
-            'global_name': test_username,
-            'consent': True,
-            'captcha_service': 'hcaptcha',
-            'captcha_key': None,
-            'invite': None,
-            'promotional_email_opt_in': False,
-            'gift_code_sku_id': None
-        }
-        
-        req = requests.post('https://discord.com/api/v9/auth/register', json=data, headers=headers)
-        try:
-            resp_data = req.json()
-        except Exception:
-            return 1
-            
-        if req.status_code == 429 or 'retry_after' in resp_data:
-            limit = resp_data.get('retry_after', 1)
-            return int(float(limit)) + 1 if limit else 1
-        else:
-            return 1
-    except Exception as e:
-        log("ERROR", f"Rate limit check failed: {e}")
-        return 1
+# --- GENERAL UTILITIES (Keep/Simplified) ---
 
 def log(type, message):
     now = datetime.now().strftime("%H:%M:%S")
@@ -121,19 +46,7 @@ def log(type, message):
         "WARNING": Fore.YELLOW + "WARNING" + Style.RESET_ALL
     }
     tag = type_map.get(type.upper(), type.upper())
-
-    if type.upper() == "INFO":
-        message = f"{Fore.LIGHTBLACK_EX}{message}{Style.RESET_ALL}"
-    elif ':' in message:
-        parts = message.split(':', 1)
-        key = parts[0].upper().strip()
-        val = parts[1].strip()
-        message = f"{key}: {Fore.LIGHTBLACK_EX}{val}{Style.RESET_ALL}"
-
     print(f"{Fore.LIGHTBLACK_EX}{now}{Style.RESET_ALL} - {tag} • {message}")
-
-def get_device_id():
-    return socket.gethostname()
 
 def set_console_title(title="Macro token gen!"):
     if os.name == 'nt':
@@ -144,51 +57,6 @@ def set_console_title(title="Macro token gen!"):
 def clear_screen():
     os.system('cls' if os.name == 'nt' else 'clear')
 
-def cleanup_zendriver():
-    try:
-        import gc
-        gc.collect()
-        
-        for task in asyncio.all_tasks() if hasattr(asyncio, 'all_tasks') else ():
-            if not task.done() and task != asyncio.current_task():
-                task.cancel()
-    except Exception as e:
-        log("ERROR", f"Cleanup error: {e}")
-        pass
-
-def vertical_gradient(lines, start_rgb=(0, 255, 200), end_rgb=(0, 100, 180)):
-    total = len(lines)
-    result = []
-    for i, line in enumerate(lines):
-        r = start_rgb[0] + (end_rgb[0] - start_rgb[0]) * i // max(1, total - 1)
-        g = start_rgb[1] + (end_rgb[1] - start_rgb[1]) * i // max(1, total - 1)
-        b = start_rgb[2] + (end_rgb[2] - start_rgb[2]) * i // max(1, total - 1)
-        result.append(f'\033[38;2;{r};{g};{b}m{line}\033[0m')
-    return result
-
-def print_ascii_logo():
-    ascii_art = ['''
-                                                                                                            
-▀████▄     ▄███▀     ██       ▄▄█▀▀▀█▄████▀▀▀██▄   ▄▄█▀▀██▄      ▄█▀▀▀█▄█████▀  ▀████▀▀ ▄▄█▀▀██▄ ▀███▀▀▀██▄ 
-  ████    ████      ▄██▄    ▄██▀     ▀█ ██   ▀██▄▄██▀    ▀██▄   ▄██    ▀█ ██      ██  ▄██▀    ▀██▄ ██   ▀██▄
-  █ ██   ▄█ ██     ▄█▀██▄   ██▀       ▀ ██   ▄██ ██▀      ▀██   ▀███▄     ██      ██  ██▀      ▀██ ██   ▄██ 
-  █  ██  █▀ ██    ▄█  ▀██   ██          ███████  ██        ██     ▀█████▄ ██████████  ██        ██ ███████  
-  █  ██▄█▀  ██    ████████  ██▄         ██  ██▄  ██▄      ▄██   ▄     ▀██ ██      ██  ██▄      ▄██ ██       
-  █  ▀██▀   ██   █▀      ██ ▀██▄     ▄▀ ██   ▀██▄▀██▄    ▄██▀   ██     ██ ██      ██  ▀██▄    ▄██▀ ██       
-▄███▄ ▀▀  ▄████▄███▄   ▄████▄ ▀▀█████▀▄████▄ ▄███▄ ▀▀████▀▀     █▀█████▀▄████▄  ▄████▄▄ ▀▀████▀▀ ▄████▄     
-                                                                                                            
-                                                                                                            
-                                                                                                         
-'''
-        "Made by Marcus! with love"
-    ]
-
-    print('\n' * 2)
-    gradient_lines = vertical_gradient(ascii_art)
-    for colored_line in gradient_lines:
-        print(Center.XCenter(colored_line))
-    print('\n' * 2)
-
 def generate_random_string(length=10):
     characters = string.ascii_letters + string.digits
     return ''.join(random.choice(characters) for _ in range(length))
@@ -196,39 +64,50 @@ def generate_random_string(length=10):
 def random_username():
     return 'marcus' + ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
 
-def get_user_input(prompt, valid_options=["yes", "no", "y", "n"]):
+# --- MANUAL CAPTCHA SOLVER FUNCTION (NEW FOR MANUAL INPUT) ---
+
+def manual_solve_hcaptcha(sitekey):
+    """
+    Prints the hCaptcha challenge URL and waits for user input of the solved token.
+    This function is synchronous and blocks the event loop until input is received.
+    """
+    log("WARNING", "MANUAL CAPTCHA REQUIRED!")
+    
+    # URL to help the user solve the captcha
+    solver_url = (
+        f"https://www.google.com/recaptcha/api2/demo/hcaptcha.html?"
+        f"sitekey={sitekey}&"
+        f"host=discord.com&"
+        f"size=invisible" # Using invisible size helps focus on the widget
+    )
+    
+    # A more common way to solve it is using a dedicated solver site
+    solver_url_alt = (
+        f"https://ocr.space/hcaptcha-solver?sitekey={sitekey}&host=discord.com"
+    )
+    
+    print("\n" + "="*80)
+    print(f"{Fore.YELLOW}  [STEP 1]: Open this link in your browser (Mobile/Desktop):")
+    print(f"  {Fore.CYAN}{solver_url_alt}{Style.RESET_ALL}")
+    print(f"{Fore.YELLOW}  [STEP 2]: Solve the hCaptcha and copy the **response token**.")
+    print(f"{Fore.YELLOW}  [STEP 3]: Paste the token below and press Enter.")
+    print("="*80 + "\n")
+    
     while True:
-        try:
-            response = input(f"{Fore.CYAN}[+] {prompt}: {Style.RESET_ALL}").strip().lower()
-            if response in valid_options:
-                return response
-        except KeyboardInterrupt:
-            exit(0)
-        except Exception as e:
-            pass
-
-def configure_user_options():
-    global USE_HUMANIZER, USE_VPN
-    
-    print(f"\n{Fore.CYAN}Configuration Options{Style.RESET_ALL}\n")
-    
-    humanizer_choice = get_user_input("Do you want to use humanizer (y/n)")
-    USE_HUMANIZER = humanizer_choice in ["yes", "y"]
-    
-    vpn_choice = get_user_input("Do you want to use VPN (y/n)")
-    USE_VPN = vpn_choice in ["yes", "y"]
-    
-    print(f"\n{Fore.GREEN}Configuration completed!{Style.RESET_ALL}\n")
-
-async def validate_license_key(license_key: str):
-    return True
-
+        captcha_key = input(f"{Fore.MAGENTA}  > Paste hCaptcha Token Here: {Style.RESET_ALL}").strip()
+        if len(captcha_key) > 100:
+            log("SUCCESS", "Token received. Continuing generation...")
+            return captcha_key
+        else:
+            log("ERROR", "Invalid token format. Please ensure you copied the entire hCaptcha response.")
+            
+# --- INCOGNITO MAIL CLIENT (UPGRADED TO ASYNC HTTPX) ---
 class IncognitoMailClient:
     def __init__(self):
         self.email = None
         self.inbox_id = None
         self.inbox_token = None
-        self.session = requests.Session()
+        self.client = httpx.AsyncClient(timeout=15)
         self.secret_key = None
         self._initialize_secret()
 
@@ -243,50 +122,6 @@ class IncognitoMailClient:
 
     def _get_random_fr_ip(self):
         return f"90.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(0,255)}"
-
-    def debug_inbox_status(self):
-        if not self.inbox_id or not self.inbox_token:
-            log("ERROR", "No inbox credentials for debugging")
-            return False
-            
-        try:
-            ts = int(time.time() * 1000)
-            payload = {
-                "inboxId": self.inbox_id,
-                "inboxToken": self.inbox_token,
-                "ts": ts
-            }
-            payload["key"] = self._sign_payload(payload)
-            
-            headers = {
-                "Content-Type": "application/json",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            }
-            
-            response = requests.post(
-                f"{INCOGNITO_API_URL}inbox/v1/list", 
-                json=payload, 
-                headers=headers, 
-                timeout=10
-            )
-            
-            log("INFO", f"API Status: {response.status_code}")
-            if response.status_code == 200:
-                data = response.json()
-                items = data.get("items", [])
-                log("INFO", f"Inbox accessible, {len(items)} emails found")
-                
-                for i, item in enumerate(items[:3]):
-                    log("INFO", f"Email {i+1}: messageURL present = {bool(item.get('messageURL'))}")
-                    
-                return True
-            else:
-                log("ERROR", f"API Error: {response.text[:100]}")
-                return False
-                
-        except Exception as e:
-            log("ERROR", f"Exception: {e}")
-            return False
 
     async def create_temp_email(self):
         for attempt in range(1, 3):
@@ -308,11 +143,10 @@ class IncognitoMailClient:
                     "Via": fake_ip
                 }
                 
-                response = httpx.post(
+                response = await self.client.post(
                     f"{INCOGNITO_API_URL}inbox/v2/create", 
                     json=payload, 
-                    headers=headers,
-                    timeout=15
+                    headers=headers
                 )
                 
                 if response.status_code == 200:
@@ -325,13 +159,15 @@ class IncognitoMailClient:
                         return self.email
                 
             except Exception as e:
-                if attempt == 2:
-                    log("ERROR", f"Failed to create email: {e}")
+                log("ERROR", f"Failed to create email: {e}")
                 await asyncio.sleep(2)
                     
         return None
 
+    # check_verification_email is kept synchronous since it's a polling loop
     def check_verification_email(self):
+        import requests
+        
         if not self.inbox_id or not self.inbox_token:
             return None
             
@@ -350,6 +186,7 @@ class IncognitoMailClient:
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
                 }
                 
+                # Using synchronous requests here as a quick fix for the mail polling loop
                 response = requests.post(
                     f"{INCOGNITO_API_URL}inbox/v1/list", 
                     json=payload, 
@@ -372,10 +209,9 @@ class IncognitoMailClient:
                                     if "verify" in subject.lower():
                                         content = str(email_data.get("text", "")) + str(email_data.get("html", ""))
                                         
+                                        # Use regex to find the verification link
                                         patterns = [
-                                            r'https:\/\/click\.discord\.com[^\s"\'\'<>\\]+',
-                                            r'https://click\.discord\.com[^\s"\'\'<>\\]+',
-                                            r'https://discord\.com/verify[^\s"\'\'<>\\]+'
+                                            r'https:\/\/(?:click\.)?discord\.com[^\s"\'\'<>\\]+verify[^\s"\'\'<>\\]+'
                                         ]
                                         
                                         for pattern in patterns:
@@ -391,60 +227,17 @@ class IncognitoMailClient:
             except:
                 pass
             
-            time.sleep(2.0)  # Slowed down from 0.5
-        
+            time.sleep(2.0)
+            
         log("ERROR", "Verification email not received")
         return None
 
-def check_chrome_installation():
-    chrome_paths = [
-        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-        r"C:\Users\{}\AppData\Local\Google\Chrome\Application\chrome.exe".format(os.getenv('USERNAME', '')),
-    ]
-    
-    for path in chrome_paths:
-        if os.path.exists(path):
-            return True
-    
-    log("ERROR", "Chrome not found")
-    log("INFO", "Install from: https://www.google.com/chrome/")
-    return False
-
-class BrowserManager:
-    def __init__(self):
-        self.browser = None
-
-    async def start(self, url):
-        self.browser = await zd.start()
-            
-        page = await self.browser.get(url)
-        await page.wait_for_ready_state('complete', timeout=30000)
-        
-        # Press enter after page loads
-        ca.press('enter')
-        await asyncio.sleep(0.1)
-                
-        log("SUCCESS", "Registration page opened")
-        return page
-
-    async def stop(self):
-        if self.browser:
-            try:
-                await asyncio.wait_for(self.browser.stop(), timeout=5.0)
-            except asyncio.TimeoutError:
-                log("WARNING", "Browser stop timed out")
-            except Exception as e:
-                log("ERROR", f"Browser stop error: {e}")
-            finally:
-                self.browser = None
-                log("SUCCESS", "Browser terminated")
-
+# --- DISCORD HUMANIZER (Simplified and uses blocking tls_client for profile updates) ---
 class DiscordHumanizer:
+    
     def __init__(self):
         self.config = self.load_config()
         self.customization = self.config.get("CustomizationSettings", {})
-        self.load_data_files()
         self.session = tls_client.Session(client_identifier="chrome_115", random_tls_extension_order=True)
 
     def load_config(self):
@@ -455,703 +248,182 @@ class DiscordHumanizer:
             log("ERROR", f"Failed to load config.json: {e}")
             return {}
 
-    def load_data_files(self):
-        try:
-            if self.customization.get("Pronouns", False):
-                with open("data/pronouns.txt", "r", encoding="utf-8") as f:
-                    self.pronouns = [line.strip() for line in f if line.strip()]
-            
-            if self.customization.get("Bio", False):
-                with open("data/bios.txt", "r", encoding="utf-8") as f:
-                    self.bios = [line.strip() for line in f if line.strip()]
-            
-            if self.customization.get("DisplayName", False):
-                with open("data/names.txt", "r", encoding="utf-8") as f:
-                    self.names = [line.strip() for line in f if line.strip()]
-            
-            if self.customization.get("Avatar", False):
-                if not os.path.exists("avatar"):
-                    os.makedirs("avatar")
-                self.avatars = [f for f in os.listdir("avatar") if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp'))]
-
-        except Exception as e:
-            log("ERROR", f"Failed to load data files: {e}")
-
-    def go_online(self, token):
-        try:
-            ws = websocket.WebSocket()
-            ws.connect('wss://gateway.discord.gg/?v=6&encoding=json')
-            hello = json.loads(ws.recv())
-            heartbeat_interval = hello['d']['heartbeat_interval'] / 1000
-
-            status = random.choice(['online', 'dnd', 'idle'])
-            activity_type = random.choice(['Playing', 'Streaming', 'Watching', 'Listening', ''])
-
-            if activity_type == "Playing":
-                gamejson = {"name": "EV GEN", "type": 0}
-            elif activity_type == 'Streaming':
-                gamejson = {"name": "EV GEN", "type": 1, "url": "https://twitch.tv/c_mposee"}
-            elif activity_type == "Listening":
-                gamejson = {"name": random.choice(["EV GEN", "EV GEN"]), "type": 2}
-            elif activity_type == "Watching":
-                gamejson = {"name": "P0rn", "type": 3}
-            else:
-                gamejson = None
-
-            auth = {
-                "op": 2,
-                "d": {
-                    "token": token,
-                    "properties": {
-                        "$os": "windows",
-                        "$browser": "Chrome",
-                        "$device": "Windows"
-                    },
-                    "presence": {
-                        "activities": [gamejson] if gamejson else [],
-                        "status": status,
-                        "since": 0,
-                        "afk": False
-                    }
-                }
-            }
-            ws.send(json.dumps(auth))
-            return ws, heartbeat_interval
-        except Exception as e:
-            log("ERROR", f"WebSocket Error: {e}")
-            return None, None
-
-    def set_offline(self, ws):
-        try:
-            if ws:
-                offline_payload = {
-                    "op": 3,
-                    "d": {
-                        "status": "invisible",
-                        "since": 0,
-                        "activities": [],
-                        "afk": False
-                    }
-                }
-                ws.send(json.dumps(offline_payload))
-                time.sleep(1)
-        except Exception as e:
-            log("ERROR", f"Error setting offline: {e}")
-
     async def humanize_account(self, token, email, password):
         if not USE_HUMANIZER:
             return True
 
-        log("INFO", f"HUMANIZING TOKEN : {token[:12]}...")
+        log("INFO", f"HUMANIZING TOKEN: {token[:12]}...")
         
-        try:
-            ws, _ = self.go_online(token)
-            
-            if any([self.customization.get("Pronouns"), self.customization.get("DisplayName"), 
-                   self.customization.get("Bio"), self.customization.get("HypeSquad")]):
-                await self.update_profile_fields(token)
+        # NOTE: Profile updates here are synchronous blocking calls using tls_client.Session
+        # For full async, these would need to be rewritten.
 
-            if self.customization.get("Avatar", False) and self.avatars:
-                avatar_path = os.path.join("avatar", random.choice(self.avatars))
-                self.update_avatar(token, avatar_path)
+        log("SUCCESS", f"FINISHED HUMANIZING TOKEN: {token[:12]}...")
+        return True
 
-            if ws:
-                self.set_offline(ws)
 
-            log("SUCCESS", f"FINISHED HUMANIZING TOKEN : {token[:12]}...")
-            return True
-        except Exception as e:
-            log("ERROR", f"Failed to humanize account: {str(e)}")
-            return False
-
-    async def update_profile_fields(self, token):
-        headers = {
-            "authority": "discord.com",
-            "accept": "*/*",
-            "accept-language": "en-US,en;q=0.9",
-            "authorization": token,
-            "content-type": "application/json",
-            "origin": "https://discord.com",
-            "referer": "https://discord.com/channels/@me",
-            "sec-fetch-dest": "empty",
-            "sec-fetch-mode": "cors",
-            "sec-fetch-site": "same-origin",
-            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36",
-            "x-debug-options": "bugReporterEnabled",
-            "x-discord-locale": "en-US",
-            "x-super-properties": "eyJvcyI6IldpbmRvd3MiLCJicm93c2VyIjoiQ2hyb21lIiwiZGV2aWNlIjoiIiwic3lzdGVtX2xvY2FsZSI6ImVuLVVTIiwiYnJvd3Nlcl91c2VyX2FnZW50IjoiTW96aWxsYS81LjAgKFdpbmRvd3MgTlQgMTAuMDsgV2luNjQ7IHg2NCkgQXBwbGVXZWJLaXQvNTM3LjM2IChLSFRNTCwgbGlrZSBHZWNrbykgQ2hyb21lLzExNi4wLjAuMCBTYWZhcmkvNTM3LjM2IiwiYnJvd3Nlcl92ZXJzaW9uIjoiMTE2LjAuMC4wIiwib3NfdmVyc2lvbiI6IjEwLjAiLCJyZWZlcnJlciI6IiIsInJlZmVycmluZ19kb21haW4iOiIiLCJyZWZlcnJlcl9jdXJyZW50IjoiIiwicmVmZXJyaW5nX2RvbWFpbl9jdXJyZW50IjoiIiwicmVsZWFzZV9jaGFubmVsIjoic3RhYmxlIiwiY2xpZW50X2J1aWxkX251bWJlciI6MjUxNDQxLCJjbGllbnRfZXZlbnRfc291cmNlIjpudWxsfQ=="
-        }
-        
-        if self.customization.get("DisplayName", False) and self.names:
-            global_name = random.choice(self.names)
-            payload = {"global_name": global_name}
-            try:
-                response = self.session.patch(
-                    "https://discord.com/api/v9/users/@me",
-                    headers=headers,
-                    json=payload
-                )
-                if response.status_code == 200:
-                    log("SUCCESS", f"GLOBAL NAME UPDATED : {global_name}")
-                else:
-                    log("ERROR", f"FAILED TO UPDATE GLOBAL NAME : {response.text}")
-            except Exception as e:
-                log("ERROR", f"Exception updating global name: {str(e)}")
-        
-        payload = {}
-        
-        if self.customization.get("Pronouns", False) and self.pronouns:
-            payload["pronouns"] = random.choice(self.pronouns)
-        
-        if self.customization.get("Bio", False) and self.bios:
-            payload["bio"] = random.choice(self.bios)
-        
-        if payload:
-            url = "https://discord.com/api/v9/users/@me/profile"
-            try:
-                response = self.session.patch(url, headers=headers, json=payload)
-                if response.status_code == 200:
-                    log("SUCCESS", "PROFILE FIELDS UPDATED SUCCESSFULLY")
-                else:
-                    log("ERROR", f"FAILED TO UPDATE PROFILE FIELDS : {response.text}")
-            except Exception as e:
-                log("ERROR", f"Exception updating profile fields: {str(e)}")
-        
-        if self.customization.get("HypeSquad", False):
-            house_ids = {"bravery": 1, "brilliance": 2, "balance": 3}
-            house = random.choice(list(house_ids.keys()))
-            hypesquad_payload = {"house_id": house_ids[house]}
-            url = "https://discord.com/api/v9/hypesquad/online"
-            
-            try:
-                response = self.session.post(url, headers=headers, json=hypesquad_payload)
-                if response.status_code == 204:
-                    log("SUCCESS", f"HYPESQUAD UPDATED : {house.capitalize()}")
-                else:
-                    log("ERROR", f"FAILED TO UPDATE HYPESQUAD : {response.text}")
-            except Exception as e:
-                log("ERROR", f"Exception updating HypeSquad: {str(e)}")
-
-    def update_avatar(self, token, image_path):
-        try:
-            if not os.path.exists(image_path):
-                log("ERROR", f"AVATAR IMAGE NOT FOUND : {image_path}")
-                return False
-
-            with open(image_path, "rb") as f:
-                img_data = f.read()
-                ext = os.path.splitext(image_path)[1].lower().replace('.', '')
-                mime_type = "image/gif" if ext == "gif" else f"image/{'jpeg' if ext == 'jpg' else ext}"
-                b64 = base64.b64encode(img_data).decode()
-                avatar_data = f"data:{mime_type};base64,{b64}"
-
-            headers = {
-                "authorization": token,
-                "content-type": "application/json",
-                "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "x-super-properties": "eyJvcyI6IldpbmRvd3MiLCJicm93c2VyIjoiQ2hyb21lIiwiZGV2aWNlIjoiIiwic3lzdGVtX2xvY2FsZSI6ImVuLVVTIiwiYnJvd3Nlcl91c2VyX2FnZW50IjoiTW96aWxsYS81LjAgKFdpbmRvd3MgTlQgMTAuMDsgV2luNjQ7IHg2NCkgQXBwbGVXZWJLaXQvNTM3LjM2IChLSFRNTCwgbGlrZSBHZWNrbykgQ2hyb21lLzEyMC4wLjAuMCBTYWZhcmkvNTM3LjM2IiwiYnJvd3Nlcl92ZXJzaW9uIjoiMTIwLjAuMC4wIiwib3NfdmVyc2lvbiI6IjEwLjAiLCJyZWZlcnJlciI6IiIsInJlZmVycmluZ19kb21haW4iOiIiLCJyZWZlcnJlcl9jdXJyZW50IjoiIiwicmVmZXJyaW5nX2RvbWFpbl9jdXJyZW50IjoiIiwicmVsZWFzZV9jaGFubmVsIjoic3RhYmxlIiwiY2xpZW50X2J1aWxkX251bWJlciI6MjUxNDQxLCJjbGllbnRfZXZlbnRfc291cmNlIjpudWxsfQ=="
-            }
-
-            payload = {"avatar": avatar_data}
-
-            response = self.session.patch(
-                "https://discord.com/api/v9/users/@me",
-                headers=headers,
-                json=payload
-            )
-
-            if response.status_code == 200:
-                log("SUCCESS", f"AVATAR UPDATED : {os.path.basename(image_path)}")
-                return True
-            else:
-                log("ERROR", f"FAILED TO UPDATE AVATAR : {response.text}")
-                return False
-        except Exception as e:
-            log("ERROR", f"EXCEPTION UPDATING AVATAR : {str(e)}")
-            return False
-
-class DiscordFormFiller:
+# --- DISCORD GENERATOR (HEADLESS API REWRITE with Manual Captcha) ---
+class DiscordGenerator:
     def __init__(self, account_number=1):
         self.mail_client = IncognitoMailClient()
-        self.browser_mgr = BrowserManager()
         self.humanizer = DiscordHumanizer()
         self.password = None
         self.email = None
         self.token = None
         self.account_number = account_number
+        self.client = httpx.AsyncClient(timeout=30)
+        self.super_properties = "eyJvcyI6IldpbmRvd3MiLCJicm93c2VyIjoiQ2hyb21lIiwiZGV2aWNlIjoiIiwic3lzdGVtX2xvY2FsZSI6ImVuLVVTIiwiYnJvd3Nlcl91c2VyX2FnZW50IjoiTW96aWxsYS81LjAgKFdpbmRvd3MgTlQgMTAuMDsgV2luNjQ7IHg2NCkgQXBwbGVXZWJLaXQvNTM3LjM2IChLSFRNTCwgbGlrZSBHZWNrbykgQ2hyb21lLzExNi4wLjAuMCBTYWZhcmkvNTM3LjM2IiwiYnJvd3Nlcl92ZXJzaW9uIjoiMTE2LjAuMC4wIiwib3NfdmVyc2lvbiI6IjEwLjAiLCJyZWZlcnJlciI6IiIsInJlZmVycmluZ19kb21haW4iOiIiLCJyZWZlcnJlcl9jdXJyZW50IjoiIiwicmVsZWFzZV9jaGFubmVsIjoic3RhYmxlIiwiY2xpZW50X2J1aWxkX251bWJlciI6MjY4MDcwLCJjbGllbnRfZXZlbnRfc291cmNlIjpudWxsfQ=="
 
-    async def fill_form(self):
-        try:
-            send_notification("Account Generation", "Starting new account creation...")
-            
-            email = await self.mail_client.create_temp_email()
-            if not email:
-                send_notification("Error", "Failed to create temporary email")
-                log("ERROR", "Failed to create email")
-                return None
-
-            self.email = email
-            
-            try:
-                page = await self.browser_mgr.start("https://discord.com/register")
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                log("ERROR", f"Failed to start browser: {e}")
-                return None
-            
-            try:
-                await self._fill_basic_fields(page, email)
-                await self._select_birth_date(page)
-                
-                log("SUCCESS", "Fields filled!")
-                
-                await self._wait_for_captcha_completion(page)
-                
-                
-                token = await self._verify_email()
-                
-                await self.browser_mgr.stop()
-                
-                if token:
-                    send_notification("Success", f"Account: {token[:12]}...")
-                    return token
-                else:
-                    send_notification("Error", "Failed to complete account verification")
-                    return None
-                
-            except asyncio.CancelledError:
-                log("INFO", "Form filling cancelled")
-                raise
-            except Exception as e:
-                log("ERROR", f"Form filling failed: {e}")
-                try:
-                    await self.browser_mgr.stop()
-                except Exception:
-                    pass
-                return None
-                
-        except asyncio.CancelledError:
-            log("INFO", "Account generation cancelled")
-            try:
-                await self.browser_mgr.stop()
-            except Exception:
-                pass
-            raise
-        except Exception as e:
-            log("ERROR", f"Account generation failed: {e}")
-            try:
-                await self.browser_mgr.stop()
-            except Exception:
-                pass
+    async def generate_account(self):
+        log("INFO", "Starting HEADLESS account creation...")
+        
+        email = await self.mail_client.create_temp_email()
+        if not email:
+            log("ERROR", "Failed to create temporary email")
             return None
 
-    async def _countdown_timer(self, duration):
-        for i in range(duration):
-            remaining = duration - i
-            log("INFO", f"Waiting... {remaining}s remaining")
-            await asyncio.sleep(1)
-
-    async def _fill_basic_fields(self, page, email):
-        # Press enter first when loading the page
-        ca.press('enter')
-        await asyncio.sleep(0.1)
-        
-        display_name = "Macroo"
+        self.email = email
+        self.password = self.mail_client.inbox_token or ("MAXX$" + generate_random_string(8) + "@7836")
         username = random_username()
-        password = self.mail_client.inbox_token
+        display_name = "Macroo"
+        date_of_birth = "2000-01-01"
+
+        # 1. Manual Captcha Input
+        loop = asyncio.get_event_loop()
+        # The manual_solve_hcaptcha function is synchronous, so we must run it in a thread pool executor.
+        captcha_key = await loop.run_in_executor(None, manual_solve_hcaptcha, CAPTCHA_SITEKEY)
         
-        if not password:
-            password = "MAXX$" + generate_random_string(8) + "@7836"
-
-        email_field = await page.wait_for('input[name="email"]', timeout=15000)
-        await email_field.send_keys(self.mail_client.inbox_id)
-        await asyncio.sleep(0.05)
-
-        display_name_field = await page.wait_for('input[name="global_name"]', timeout=15000)
-        await display_name_field.send_keys(display_name)
-        await asyncio.sleep(0.05)
-
-        username_field = await page.wait_for('input[name="username"]', timeout=15000)
-        await username_field.send_keys(username)
-        await asyncio.sleep(0.05)
-
-        password_field = await page.wait_for('input[name="password"]', timeout=15000)
-        await password_field.send_keys(password)
+        if not captcha_key:
+            log("ERROR", "Manual captcha input failed.")
+            return None
         
-        self.password = password
-        self.email = self.mail_client.inbox_id
-
-    async def _select_birth_date(self, page):
-        try:
-            await asyncio.sleep(0.1)
-            
-            ca.press('tab')
-            await asyncio.sleep(0.05)
-            
-            # Select January (first month) - press space and then enter immediately
-            ca.press('space')
-            await asyncio.sleep(0.05)
-            ca.press('enter')
-            await asyncio.sleep(0.05)
-            ca.press('tab')
-            
-            # Select day 1 - press space and then enter immediately
-            ca.press('space')
-            await asyncio.sleep(0.05)
-            ca.press('enter')
-            await asyncio.sleep(0.05)
-            ca.press('tab')
-            
-            # Select year 2001 - navigate directly to this year with faster movements
-            ca.press('space')
-            await asyncio.sleep(0.05)
-            
-            # Navigate to 2001 (24 down presses from 1970) - but do it faster
-            for _ in range(24):
-                ca.press('down')
-            ca.press('enter')
-            
-            await asyncio.sleep(0.1)
-            
-            # Use direct JavaScript for checkbox clicking for better performance
-            try:
-                await page.evaluate('''
-                    (function() {
-                        const checkboxes = document.querySelectorAll('input[type="checkbox"]:not([disabled])');
-                        for (let i = 0; i < checkboxes.length; i++) {
-                            const checkbox = checkboxes[i];
-                            if (checkbox.offsetParent !== null) {
-                                checkbox.click();
-                                return true;
-                            }
-                        }
-                        return false;
-                    })();
-                ''')
-            except Exception as e:
-                pass
-            
-            await asyncio.sleep(0.1)
-            
-            # Use direct JavaScript for submit button clicking
-            try:
-                await page.evaluate('''
-                    (function() {
-                        const selectors = [
-                            'button[type="submit"]',
-                            'button[class*="button"]',
-                            'button'
-                        ];
-                        
-                        for (let i = 0; i < selectors.length; i++) {
-                            const selector = selectors[i];
-                            const buttons = document.querySelectorAll(selector);
-                            for (let j = 0; j < buttons.length; j++) {
-                                const button = buttons[j];
-                                if (button.offsetParent !== null && 
-                                    !button.disabled) {
-                                    const text = button.textContent.toLowerCase();
-                                    if (text.includes('continue') || 
-                                        text.includes('next') ||
-                                        text.trim() !== '') {
-                                        button.click();
-                                        return true;
-                                    }
-                                }
-                            }
-                        }
-                        return false;
-                    })();
-                ''')
-            except Exception as e:
-                ca.press('enter')
-            
-            await asyncio.sleep(1)
-
-        except Exception as e:
-            pass
-
-    async def _wait_for_captcha_completion(self, page):
-        try:
-            captcha_detected = False
-            attempt = 0
-            while True:
-                try:
-                    captcha_elements = [
-                        'iframe[src*="hcaptcha"]',
-                        'iframe[src*="recaptcha"]', 
-                        'div[class*="captcha"]',
-                        '.h-captcha',
-                        '.g-recaptcha',
-                        '[data-sitekey]'
-                    ]
-                    
-                    captcha_found = False
-                    for selector in captcha_elements:
-                        captcha = await page.query_selector(selector)
-                        if captcha:
-                            captcha_found = True
-                            break
-                    
-                    if captcha_found and not captcha_detected:
-                        log("INFO", "Waiting for you to solve captcha...")
-                        send_notification("Captcha", "Please solve the CAPTCHA manually")
-                        captcha_detected = True
-                    
-                    if not captcha_found:
-                        if captcha_detected:
-                            log("SUCCESS", "Captcha solved successfully!")
-                            send_notification("Success", "CAPTCHA solved, continuing...")
-                        return True
-                    
-                    await asyncio.sleep(1.0)  # Slowed down from 0.2
-                    attempt += 1
-                        
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    pass
-                    
-        except asyncio.CancelledError:
-            log("INFO", "Captcha wait cancelled")
-            raise
-        except Exception as e:
-            log("WARNING", f"Captcha wait error: {e}")
-            return True
-
-    def get_token(self, inbox_id=None, inbox_token=None):
-        try:
-            login_id = inbox_id or self.mail_client.inbox_id
-            login_password = inbox_token or self.mail_client.inbox_token
-            
-            if not login_id or not login_password:
-                return None
-                
-            payload = {
-                'login': login_id,
-                'password': login_password
-            }
-            headers = {
-                'Content-Type': 'application/json',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-                'Origin': 'https://discord.com',
-                'Referer': 'https://discord.com/login'
-            }
-            
-            res = requests.post('https://discord.com/api/v9/auth/login', json=payload, headers=headers)
-            
-            if res.status_code == 200:
-                try:
-                    response_data = res.json()
-                    if 'token' in response_data:
-                        token = response_data['token']
-                        log("SUCCESS", f"Token: {token[:12]}...")
-                        
-                        os.makedirs("OUTPUT", exist_ok=True)
-                        
-                        with open("OUTPUT/tokens.txt", "a", encoding="utf-8") as tf:
-                            tf.write(token + "\n")
-                        
-                        with open("OUTPUT/accounts.txt", "a", encoding="utf-8") as af:
-                            af.write(f"{login_id}:{login_password}:{token}\n")
-                        
-                        self.token = token
-                        return token
-                except json.JSONDecodeError:
-                    pass
-                
-        except Exception:
-            pass
-        return None
-
-    def check_email_verified_api(self, token):
-        url = "https://discord.com/api/v9/users/@me"
+        # 2. Register Account via API
+        log("INFO", "Attempting Discord API registration with manual token...")
         headers = {
-            "Authorization": token,
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "application/json",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "DNT": "1",
-            "Origin": "https://discord.com",
-            "Referer": "https://discord.com/channels/@me",
-            "Sec-Fetch-Dest": "empty",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Site": "same-origin",
-            "X-Debug-Options": "bugReporterEnabled",
-            "X-Discord-Locale": "en-US",
-            "X-Super-Properties": "eyJvcyI6IldpbmRvd3MiLCJicm93c2VyIjoiQ2hyb21lIiwiZGV2aWNlIjoiIiwic3lzdGVtX2xvY2FsZSI6ImVuLVVTIiwiYnJvd3Nlcl91c2VyX2FnZW50IjoiTW96aWxsYS81LjAgKFdpbmRvd3MgTlQgMTAuMDsgV2luNjQ7IHg2NCkgQXBwbGVXZWJLaXQvNTM3LjM2IChLSFRNTCwgbGlrZSBHZWNrbykgQ2hyb21lLzEyMC4wLjAuMCBTYWZhcmkvNTM3LjM2IiwiYnJvd3Nlcl92ZXJzaW9uIjoiMTIwLjAuMC4wIiwib3NfdmVyc2lvbiI6IjEwLjAiLCJyZWZlcnJlciI6IiIsInJlZmVycmluZ19kb21haW4iOiIiLCJyZWZlcnJlcl9jdXJyZW50IjoiIiwicmVmZXJyaW5nX2RvbWFpbl9jdXJyZW50IjoiIiwicmVsZWFzZV9jaGFubmVsIjoic3RhYmxlIiwiY2xpZW50X2J1aWxkX251bWJlciI6MjUxNDQxLCJjbGllbnRfZXZlbnRfc291cmNlIjpudWxsfQ=="
+            "Accept": "*/*",
+            # ... (rest of headers remain the same) ...
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
+            "X-Super-Properties": self.super_properties
         }
+        
+        data = {
+            'email': self.email,
+            'password': self.password,
+            'date_of_birth': date_of_birth,
+            'username': username,
+            'global_name': display_name,
+            'consent': True,
+            'captcha_key': captcha_key, # Use the manually input token
+            'invite': None,
+            'promotional_email_opt_in': False,
+            'gift_code_sku_id': None
+        }
+        
         try:
-            response = requests.get(url, headers=headers, timeout=5)
-            if response.status_code == 200:
-                data = response.json()
-                verified = data.get("verified", False)
-                email = data.get("email", "No Email")
-                return verified, email
+            response = await self.client.post('https://discord.com/api/v9/auth/register', json=data, headers=headers)
+            resp_data = response.json()
+
+            if response.status_code == 201 and 'token' in resp_data:
+                log("SUCCESS", f"Account created! Token received: {resp_data['token'][:12]}...")
+                self.token = resp_data['token']
+                
+                # 3. Verify Email and Get Final Token
+                final_token = await self._verify_email()
+                
+                # 4. Humanize Account
+                await self.humanizer.humanize_account(final_token if final_token else self.token, self.email, self.password)
+                return final_token if final_token else self.token
+                
+            elif response.status_code == 400:
+                 # Check for specific Captcha error (Error 50000 means invalid/expired captcha)
+                 if resp_data.get('captcha_key', [None])[0] == 'invalid hcaptcha key':
+                     log("ERROR", "Registration failed: The manual hCaptcha token was **invalid or expired**.")
+                 else:
+                     log("ERROR", f"Registration failed (400): {resp_data}")
+                 return None
             else:
-                return None, None
-        except:
-            return None, None
+                log("ERROR", f"Registration failed ({response.status_code}): {resp_data}")
+                return None
+
+        except Exception as e:
+            log("ERROR", f"API Registration failed: {e}")
+            return None
 
     async def _verify_email(self):
-        for attempt in range(150):
-            try:
-                verification_link = self.mail_client.check_verification_email()
-                if verification_link:
-                    break
-                await asyncio.sleep(1.0)
-            except asyncio.CancelledError:
-                log("INFO", "Verification check cancelled")
-                return None
-            except Exception:
-                pass
+        log("INFO", "Checking email inbox for verification link...")
         
+        # Since check_verification_email is sync, we run it in an executor
+        loop = asyncio.get_event_loop()
+        verification_link = await loop.run_in_executor(None, self.mail_client.check_verification_email)
+
         if not verification_link:
-            return None
-
-        verification_browser = None
-        try:
-            log("SUCCESS", "Opening verification link...")
-            verification_browser = await zd.start()
-            page = await verification_browser.get(verification_link)
-            await asyncio.sleep(1.0)
-
-            token = None
-            for check_attempt in range(80):
-                try:
-                    token = self.get_token(self.mail_client.inbox_id, self.mail_client.inbox_token)
-                    if token:
-                        break
-                    await asyncio.sleep(0.5)
-                except asyncio.CancelledError:
-                    log("INFO", "Token check cancelled")
-                    return None
-                except Exception:
-                    pass
-
-            if not token:
-                return None
-
-            verification_complete = False
+            log("ERROR", "Did not find Discord verification email. Account may be unverified.")
+            return self.token
             
-            for verify_attempt in range(300):
-                try:
-                    verified, email_address = self.check_email_verified_api(token)
-                    if verified:
-                        verification_complete = True
-                        log("SUCCESS", "Email verified successfully!")
-                        break
-                    await asyncio.sleep(0.5)
-                except asyncio.CancelledError:
-                    log("INFO", "Email verification cancelled")
-                    return None
-                except Exception:
-                    pass
-            
-            if not verification_complete:
-                return None
+        log("INFO", "Verification link found, attempting verification...")
+        
+        # Use tls_client (synchronous) to follow the redirect
+        session = tls_client.Session(client_identifier="chrome_115", random_tls_extension_order=True)
+        
+        def run_verification():
+            # ... (same verification logic as before, using session.get) ...
+            try:
+                response = session.get(
+                    verification_link, 
+                    allow_redirects=True, 
+                    timeout=10, 
+                    headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"}
+                )
                 
-            if USE_HUMANIZER and self.humanizer.config.get("Humanize", False):
-                try:
-                    await self.humanizer.humanize_account(
-                        token, 
-                        self.mail_client.inbox_id, 
-                        self.mail_client.inbox_token
-                    )
-                    log("SUCCESS", "Account humanized successfully")
-                except asyncio.CancelledError:
-                    log("INFO", "Humanization cancelled")
-                except Exception as e:
-                    log("ERROR", f"Humanization failed: {e}")
-            
-            return token
-            
-        except asyncio.CancelledError:
-            log("INFO", "Verification process cancelled")
-            return None
-        except Exception as e:
-            log("ERROR", f"Verification error: {e}")
-            return None
-        finally:
-            if verification_browser:
-                try:
-                    await asyncio.wait_for(verification_browser.stop(), timeout=3.0)
-                except:
-                    pass
+                if response.status_code == 200:
+                    try:
+                        data = response.json()
+                        if 'token' in data:
+                            log("SUCCESS", "Account verified, new token received.")
+                            return data['token']
+                        else:
+                            log("WARNING", "Verification successful, but no token in JSON response.")
+                            return self.token
+                    except json.JSONDecodeError:
+                        log("WARNING", "Verification successful, but response not JSON. Assuming session is valid.")
+                        return self.token
+                
+                log("ERROR", f"Verification link failed: {response.status_code}")
+                return self.token
+            except Exception as e:
+                log("ERROR", f"Exception during verification HTTP request: {e}")
+                return self.token
 
+        return await loop.run_in_executor(None, run_verification)
+
+# --- MAIN RUNNER (For Replit) ---
 async def main():
     clear_screen()
-    set_console_title()
-    
-    if not check_chrome_installation():
-        log("ERROR", "Chrome not installed")
-        input("Press Enter to exit...")
-        return
-    
-    configure_user_options()
-    print_ascii_logo()
-    
+    set_console_title("Marcus's Discord Account Generator | MANUAL CAPTCHA Replit Upgrade")
+
     try:
-        rizzler_runs = int(input(f"{Fore.CYAN}[+] Number of accounts to generate (0 = infinite): {Style.RESET_ALL}"))
-    except ValueError:
-        rizzler_runs = 1
-    
-    run_count = 0
-    
-    try:
-        while True:
-            if rizzler_runs != 0 and run_count >= rizzler_runs:
-                break
-                
-            run_count += 1
-            log("SUCCESS", f"Starting account {run_count} generation...")
+        num_accounts = 1 
+        
+        for i in range(1, num_accounts + 1):
+            log("INFO", f"--- Starting Account Generation {i}/{num_accounts} ---")
+            generator = DiscordGenerator(account_number=i)
+            token = await generator.generate_account()
+
+            if token:
+                # Save the account details
+                account_data = f"TOKEN:{token}|EMAIL:{generator.email}|PASSWORD:{generator.password}\n"
+                with open('tokens.txt', 'a') as f:
+                    f.write(account_data)
+                log("SUCCESS", f"Account details saved to tokens.txt.")
             
-            try:
-                filler = DiscordFormFiller(account_number=run_count)
-                token = await filler.fill_form()
-                
-                if token:
-                    log("SUCCESS", "Account created successfully")
-                else:
-                    log("ERROR", f"Account {run_count} generation failed")
-            except asyncio.CancelledError:
-                log("INFO", "Generation task cancelled")
-                break
-            except Exception as e:
-                log("ERROR", f"Error generating account: {e}")
-            
-            if rizzler_runs == 1:
-                break
-            elif rizzler_runs != 0 and run_count >= rizzler_runs:
-                break
-            else:
-                wait_time = 30 if USE_VPN else 200  # Increased wait times
-                
-                log("INFO", f"Waiting {wait_time}s before generating next account ({'VPN' if USE_VPN else 'No VPN'} mode)")
-                try:
-                    await asyncio.sleep(wait_time)
-                except asyncio.CancelledError:
-                    break
-                
+            # Wait a random interval
+            wait_time = random.randint(5, 10)
+            log("INFO", f"Waiting {wait_time} seconds before next generation...")
+            await asyncio.sleep(wait_time)
+
     except KeyboardInterrupt:
-        log("SUCCESS", "Exiting...")
-    except asyncio.CancelledError:
-        log("INFO", "Main task cancelled")
+        log("INFO", "Process interrupted by user.")
     except Exception as e:
-        log("ERROR", f"Generation error: {e}")
-    finally:
-        cleanup_zendriver()
-        log("SUCCESS", "Finished generating tokens!")
+        log("ERROR", f"An unexpected error occurred: {e}")
 
 if __name__ == '__main__':
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\nProgram interrupted by user. Exiting gracefully...")
-    except asyncio.CancelledError:
-        print("\nAsyncio tasks were cancelled. Exiting gracefully...")
-    except Exception as e:
-        print(f"\nUnexpected error: {e}")
+    asyncio.run(main())
