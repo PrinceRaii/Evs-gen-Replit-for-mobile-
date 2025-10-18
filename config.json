@@ -1,0 +1,16 @@
+{
+    "Humanize": true,
+    "RetryLimit": 3,
+    "check_ratelimit": true,
+    "notify": true,
+    "notification_icon": "data/pack.ico",
+    "mail_api": "https://api.incognitomail.co/",
+    "mail_domain": "vorlentis.xyz",
+    "CustomizationSettings": {
+        "Pronouns": true,
+        "Bio": true,
+        "DisplayName": true,
+        "Avatar": true,
+        "HypeSquad": true
+    }
+}
