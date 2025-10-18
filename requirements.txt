@@ -1,1 +1,16 @@
+# Core networking and API communication
+requests
+httpx
+tls-client
+websocket-client
+
+# Async operations (standard library, but good to list if needed for environment)
+asyncio
+
+# Terminal styling and logging
+colorama
+
+# Advanced API requirements
+hmac
+base64
 python-dateutil
